@@ -278,6 +278,57 @@ class PCC:
         except Exception as exc:
             tender.risks.append(f"結構化欄位 fallback 失敗: {type(exc).__name__}")
 
+        # Second fallback: resolve agency code, then read a public tender mirror page.
+        # This is used only for fields the official detail response failed to expose.
+        if tender.budget is None or not tender.deadline or not tender.award_type:
+            try:
+                unit_info_url = "https://pcc.mlwmlw.org/api/unit_info/" + quote(tender.unit, safe="")
+                ur = requests.get(
+                    unit_info_url,
+                    timeout=8,
+                    headers={"User-Agent": "WishRail-Tender-Radar/0.2", "Accept": "application/json"},
+                )
+                ur.raise_for_status()
+                info = ur.json() if ur.content else {}
+                unit_id = str(info.get("_id") or "").strip() if isinstance(info, dict) else ""
+                if unit_id:
+                    mirror_url = (
+                        "https://ezbid.tw/detail/"
+                        + quote(unit_id, safe=".")
+                        + "/"
+                        + quote(tender.job_number, safe="-_.")
+                    )
+                    mr = requests.get(
+                        mirror_url,
+                        timeout=10,
+                        headers={"User-Agent": "Mozilla/5.0 WishRail-Tender-Radar/0.2"},
+                    )
+                    mr.raise_for_status()
+                    msoup = BeautifulSoup(mr.text, "html.parser")
+                    mtext = clean(msoup)
+                    # Guard against a generic/error page.
+                    if tender.job_number in mtext or tender.title[:12] in mtext:
+                        if tender.budget is None:
+                            amount = money_from_text(mtext)
+                            if amount is not None:
+                                tender.budget = amount
+                                tender.reasons.append("預算由公開標案鏡像補足")
+                        if not tender.deadline:
+                            deadline = deadline_from_text(mtext)
+                            if deadline:
+                                tender.deadline = deadline
+                                tender.reasons.append("截止日由公開標案鏡像補足")
+                        if not tender.award_type:
+                            tender.award_type = text_after_label(mtext, "決標方式")
+                        if not tender.qualification:
+                            tender.qualification = text_after_label(mtext, "廠商資格摘要", 1200)
+                        if not tender.bid_bond:
+                            tender.bid_bond = text_after_label(mtext, "是否須繳納押標金")
+                        if not tender.performance_bond:
+                            tender.performance_bond = text_after_label(mtext, "是否須繳納履約保證金")
+            except Exception as exc:
+                tender.risks.append(f"公開鏡像 fallback 失敗: {type(exc).__name__}")
+
     def hydrate(self, tender: Tender) -> Tender:
         if not tender.url:
             tender.risks.append("官方 detail URL 缺失")
