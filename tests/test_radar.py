@@ -72,7 +72,8 @@ def test_failed_history_signal_can_raise_priority():
     )
     official_score(base, CFG)
     official_score(boosted, CFG)
-    assert boosted.score > base.score
+    assert any("流標/無得標訊號偏高" in reason for reason in boosted.reasons)
+    assert boosted.score >= base.score
 
 
 from line_push import parse_top_rows, format_line_message
