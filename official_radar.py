@@ -299,6 +299,14 @@ def score(t: Tender, cfg: dict) -> None:
         value += 3
         reasons.append(f"+3 同類案單一投標比例 {t.single_bid_ratio:.0%}")
 
+    # Safety gate for incomplete notices: never elevate an unknown-budget lead to green/BID.
+    if t.budget is None:
+        value = min(value, 62)
+        risks.append("資料完整度不足：預算未知，最高僅列觀察")
+    if not t.deadline:
+        value = min(value, 64)
+        risks.append("資料完整度不足：截止時間未知")
+
     t.score = max(0, min(100, int(value)))
     t.reasons = reasons
     t.risks = risks
