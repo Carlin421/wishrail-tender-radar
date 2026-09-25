@@ -166,13 +166,29 @@ class PCC:
             tender.risks.append("官方 detail URL 缺失")
             return tender
         try:
-            soup = BeautifulSoup(self._get(tender.url).text, "html.parser")
+            html = self._get(tender.url).text
+            soup = BeautifulSoup(html, "html.parser")
         except Exception as exc:
             tender.risks.append(f"官方 detail 讀取失敗: {exc}")
             return tender
+
         tender.budget = parse_money(field_value(soup, "預算金額"))
+        if tender.budget is None:
+            m = re.search(r'id=["\\']budget["\\'][^>]*value=["\\'](\\d+)["\\']', html)
+            if m:
+                tender.budget = int(m.group(1))
+
         tender.deadline = parse_date(field_value(soup, "截止投標"))
+        if not tender.deadline:
+            m = re.search(r'id=["\\']spdt["\\'][^>]*>([^<]+)<', html)
+            if m:
+                tender.deadline = parse_date(m.group(1).strip())
+
         tender.award_type = field_value(soup, "決標方式")
+        if not tender.award_type:
+            m = re.search(r'id=["\\']fkPmsAwardWay["\\'][^>]*>([^<]+)<', html)
+            if m:
+                tender.award_type = m.group(1).strip()
         tender.qualification = (
             field_value(soup, "廠商資格摘要")
             or field_value(soup, "投標廠商資格及資格文件之附加說明")
