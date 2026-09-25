@@ -9,13 +9,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect official daily list dates
+      - name: Inspect official row markup
         run: |
-          set -e
-          for D in "115年09月23日" "115年09月24日" "115年09月25日"; do
-            echo "===== $D ====="
-            curl -sS -L --fail-with-body --max-time 30               -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"               --get --data-urlencode "dateStr=$D"               "https://web.pcc.gov.tw/prkms/tender/common/noticeDate/readPublish"               -o /tmp/pcc.html
-            wc -c /tmp/pcc.html
-            grep -n -E '查無|總筆|筆資料|公告日期|標案案號|標案名稱|機關名稱|noticeDate/redirectPublic|pkPmsMain|fn=' /tmp/pcc.html | head -80 || true
-            echo
-          done
+          curl -sS -L --fail-with-body --max-time 30             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"             --get --data-urlencode "dateStr=115年09月24日"             "https://web.pcc.gov.tw/prkms/tender/common/noticeDate/readPublish"             -o /tmp/pcc.html
+          echo "PATTERNS"
+          grep -n -E 'showTend|show.*Detail|xml|fn=|標案案號|標案名稱|class="tb' /tmp/pcc.html | head -180 || true
+          echo "FIRST RESULT AREA"
+          sed -n '330,520p' /tmp/pcc.html
