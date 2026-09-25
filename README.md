@@ -67,6 +67,36 @@ reports/YYYY-MM-DD.md
 
 這樣可以避免週末漏案，也避免開發測試把正式報告洗成空白。
 
+
+## LINE 每日推播
+
+排程掃描完成後可以直接把 **Top 5 標案** 推到 LINE。
+
+程式使用 LINE Messaging API。請在 GitHub Repo：
+
+`Settings → Secrets and variables → Actions → New repository secret`
+
+加入：
+
+- `LINE_CHANNEL_ACCESS_TOKEN`：LINE Messaging API 的 Channel access token
+- `LINE_USER_ID`：要接收推播的 LINE User ID
+
+沒有設定這兩個 Secret 時，Radar 仍會正常掃描與產生報告，只會略過 LINE 推播。
+
+本機可先測格式：
+
+```bash
+python line_push.py --dry-run
+```
+
+正式排程時會自動執行：
+
+```bash
+python line_push.py
+```
+
+LINE 訊息會包含分數、建議、標案名稱、機關、預算、截止時間、Incumbent Risk 與官方連結。
+
 ## 報告怎麼看
 
 粗略可解讀為：
