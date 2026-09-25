@@ -426,6 +426,9 @@ class PCC:
             or text_after_label(flat_text, "是否須繳納履約保證金")
             or text_after_label(flat_text, "履約保證金")
         )
-        self._fallback_structured_detail(tender)
+        # Third-party mirrors are fallback-only. Avoid extra network calls when
+        # the official PCC page already supplied the decision-critical fields.
+        if tender.budget is None or not tender.deadline or not tender.award_type:
+            self._fallback_structured_detail(tender)
 
         return tender
