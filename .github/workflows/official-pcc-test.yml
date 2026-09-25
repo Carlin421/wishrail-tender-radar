@@ -9,11 +9,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch official daily list
+      - name: Fetch and inspect official daily list
         run: |
-          set -x
           curl -L --fail-with-body --max-time 30             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"             --get             --data-urlencode "dateStr=115年09月25日"             "https://web.pcc.gov.tw/prkms/tender/common/noticeDate/readPublish"             -o /tmp/pcc.html
-          wc -c /tmp/pcc.html
-          head -c 500 /tmp/pcc.html
-          echo
-          grep -o "Web Page Blocked" /tmp/pcc.html || true
+          echo "SIZE"; wc -c /tmp/pcc.html
+          echo "LINKS"
+          grep -Eo 'href="[^"]+"' /tmp/pcc.html | grep -E 'tender|notice|Query|redirect|pkPms' | head -30 || true
+          echo "TABLE MARKERS"
+          grep -n -E '標案名稱|機關名稱|預算金額|截止投標|table|tbody|td' /tmp/pcc.html | head -100 || true
