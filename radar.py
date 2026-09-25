@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 BASE_URL = os.getenv("PCC_API_BASE_URL", "https://pcc-api.openfun.app/api").rstrip("/")
+MLW_BASE_URL = os.getenv("MLW_PCC_API_BASE_URL", "https://pcc.mlwmlw.org/api").rstrip("/")
 TAIPEI = ZoneInfo("Asia/Taipei")
 
 @dataclass
@@ -69,7 +70,23 @@ class PCC:
         raise RuntimeError(f"GET {url} failed: {last}")
 
     def list_date(self, date: str) -> list[dict]:
-        return self.get("listbydate", date=date).get("records", []) or []
+        try:
+            records = self.get("listbydate", date=date).get("records", []) or []
+            for row in records:
+                row["_source"] = "openfun"
+            return records
+        except Exception as openfun_error:
+            iso_date = datetime.strptime(date, "%Y%m%d").strftime("%Y-%m-%d")
+            url = f"{MLW_BASE_URL}/date/tender/{iso_date}"
+            print(f"OpenFun unavailable ({openfun_error}); fallback -> {url}")
+            r = self.s.get(url, timeout=30)
+            r.raise_for_status()
+            payload = r.json()
+            if not isinstance(payload, list):
+                raise RuntimeError(f"Unexpected MLW response from {url}")
+            for row in payload:
+                row["_source"] = "mlwmlw"
+            return payload
 
     def tender(self, unit_id: str, job_number: str) -> list[dict]:
         return self.get("tender", unit_id=unit_id, job_number=job_number).get("records", []) or []
@@ -130,6 +147,33 @@ def choose_notice(records: list[dict]) -> dict | None:
         if any(x in typ for x in ["招標公告", "公開取得", "更正公告"]):
             preferred.append(r)
     return max(preferred or records, key=lambda x: str(x.get("date", "")))
+
+def to_tender_mlw(summary: dict) -> Tender:
+    job = str(summary.get("job_number") or summary.get("id") or summary.get("_id") or "")
+    unit_id = str(summary.get("unit_id") or "")
+    title = str(summary.get("name") or "")
+    unit = str(summary.get("unit") or "")
+    url = str(summary.get("url") or "")
+    if url.startswith("/"):
+        url = "https://pcc.mlwmlw.org" + url
+    detail = " ".join([
+        str(summary.get("type") or ""),
+        str(summary.get("category") or ""),
+        str(summary.get("sub_category") or "")
+    ])
+    t = Tender(
+        unit_id=unit_id,
+        job_number=job,
+        title=title,
+        unit_name=unit,
+        budget=parse_money(summary.get("price")),
+        deadline=parse_date(summary.get("end_date")),
+        url=url,
+        award_type=str(summary.get("type") or ""),
+        detail_text=detail,
+    )
+    t.risks.append("備援資料源：未取得完整資格/評選欄位，投標前需再查官方公告")
+    return t
 
 def to_tender(summary: dict, records: list[dict]) -> Tender | None:
     r = choose_notice(records)
@@ -270,7 +314,9 @@ def score(t: Tender, cfg: dict) -> None:
     t.reasons, t.risks = reasons, risks
 
 def prefilter(r: dict, cfg: dict) -> bool:
-    text = f"{brief_title(r)} {r.get('unit_name', '')}"
+    title = brief_title(r) or str(r.get("name") or "")
+    unit = str(r.get("unit_name") or r.get("unit") or "")
+    text = f"{title} {unit}"
     return has(text, cfg["include_keywords"]) and not has(text, cfg["exclude_keywords"])
 
 def save_db(tenders: list[Tender]) -> None:
@@ -310,8 +356,10 @@ def main(days: int, top: int, skip_incumbent: bool) -> int:
         records = api.list_date(ds)
         print(f"{ds}: {len(records)} announcements")
         for r in records:
-            key = (r.get("unit_id"), r.get("job_number"))
-            if None in key or key in seen:
+            job = str(r.get("job_number") or r.get("id") or r.get("_id") or "")
+            unit_id = str(r.get("unit_id") or r.get("unit") or "")
+            key = (unit_id, job)
+            if not job or key in seen:
                 continue
             seen.add(key)
             if prefilter(r, cfg):
@@ -319,22 +367,28 @@ def main(days: int, top: int, skip_incumbent: bool) -> int:
 
     candidates = []
     for r in summaries:
-        try:
-            t = to_tender(r, api.tender(str(r["unit_id"]), str(r["job_number"])))
-        except Exception as e:
-            print("detail failed", r.get("job_number"), e)
-            continue
+        source = r.get("_source", "openfun")
+        if source == "mlwmlw":
+            t = to_tender_mlw(r)
+        else:
+            try:
+                t = to_tender(r, api.tender(str(r["unit_id"]), str(r["job_number"])))
+            except Exception as e:
+                print("detail failed", r.get("job_number"), e)
+                continue
         if not t:
             continue
         if t.budget is not None and not (cfg["min_budget"] <= t.budget <= cfg["max_budget"]):
             continue
         if t.unit_name and not has(t.unit_name + " " + t.detail_text, cfg["regions"]):
             continue
-        if not skip_incumbent:
+        if not skip_incumbent and source == "openfun":
             incumbent(t, api, cfg)
+        elif not skip_incumbent and source == "mlwmlw":
+            t.risks.append("OpenFun 未授權，incumbent 分析暫略；設定 OPENFUN_TOKEN 後自動啟用")
         score(t, cfg)
         candidates.append(t)
-        print(t.score, t.incumbent_risk, t.title)
+        print(t.score, t.incumbent_risk, source, t.title)
 
     save_db(candidates)
     path = report(candidates, top)
