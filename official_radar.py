@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -62,7 +63,7 @@ def merchant_names(row: dict) -> list[str]:
                 out.append(name)
     return list(dict.fromkeys(out))
 
-def enrich_history(t: Tender, timeout: int = 15) -> None:
+def enrich_history(t: Tender, timeout: int = 7) -> None:
     """Enrich with public near-term history. It is advisory and never blocks the scan."""
     query = history_query(t.title)
     if not query:
@@ -111,44 +112,53 @@ def enrich_history(t: Tender, timeout: int = 15) -> None:
             awarded_cases += 1
             winners.extend(set(names))
 
-    # Pull a small detail sample to estimate competition intensity.
-    for row in matches[:8]:
+    # Pull a bounded detail sample to estimate competition intensity.
+    # Historical data is advisory, so never let a slow mirror block the daily report.
+    def fetch_history_detail(row: dict) -> tuple[int | None, list[str]]:
         job = str(row.get("job_number") or row.get("id") or "").strip()
         unit_key = str(row.get("unit_id") or row.get("unit") or "").strip()
         if not job:
-            continue
+            return None, []
         detail_url = f"https://pcc.mlwmlw.org/api/tender/{quote(job, safe='')}"
         if unit_key:
             detail_url += f"/{quote(unit_key, safe='')}"
         try:
             detail_response = requests.get(
                 detail_url,
-                timeout=10,
-                headers={"User-Agent": "WishRail-Tender-Radar/0.2", "Accept": "application/json"},
+                timeout=5,
+                headers={"User-Agent": "WishRail-Tender-Radar/0.3", "Accept": "application/json"},
             )
             detail_response.raise_for_status()
             docs = detail_response.json()
             if not isinstance(docs, list):
-                continue
-            # Prefer a document with candidate/award data.
+                return None, []
             doc = next(
                 (d for d in docs if isinstance(d, dict) and (d.get("candidates") or d.get("award"))),
                 docs[0] if docs else None,
             )
             if not isinstance(doc, dict):
-                continue
+                return None, []
             candidates = doc.get("candidates") or []
-            if isinstance(candidates, list) and candidates:
-                bidder_counts.append(len(candidates))
-            # Some rows don't expose merchants in keyword search but do in detail.
-            detail_merchants = merchant_names(doc)
-            if not detail_merchants and isinstance(doc.get("award"), dict):
-                detail_merchants = merchant_names(doc["award"])
-            if detail_merchants and not merchant_names(row):
-                awarded_cases += 1
-                winners.extend(set(detail_merchants))
+            count = len(candidates) if isinstance(candidates, list) and candidates else None
+            names = merchant_names(doc)
+            if not names and isinstance(doc.get("award"), dict):
+                names = merchant_names(doc["award"])
+            return count, names
         except Exception:
-            continue
+            return None, []
+
+    sample_rows = matches[:6]
+    if sample_rows:
+        with ThreadPoolExecutor(max_workers=min(4, len(sample_rows))) as pool:
+            future_rows = {pool.submit(fetch_history_detail, row): row for row in sample_rows}
+            for future in as_completed(future_rows):
+                row = future_rows[future]
+                count, detail_merchants = future.result()
+                if count is not None:
+                    bidder_counts.append(count)
+                if detail_merchants and not merchant_names(row):
+                    awarded_cases += 1
+                    winners.extend(set(detail_merchants))
 
     if bidder_counts:
         t.history_samples = len(bidder_counts)
