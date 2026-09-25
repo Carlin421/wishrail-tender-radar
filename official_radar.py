@@ -424,11 +424,19 @@ def main(days: int, top: int) -> int:
     candidates: list[Tender] = []
 
     for idx, tender in enumerate(hits, 1):
+        # Daily listings already expose budget for many notices. Reject known out-of-range
+        # cases before opening detail pages, which greatly reduces PCC WAF pressure.
+        if tender.budget is not None and not (
+            cfg["min_budget"] <= tender.budget <= cfg["max_budget"]
+        ):
+            print(f"[{idx}/{len(hits)}] skip-listing {money(tender.budget)} | {tender.title}")
+            continue
+
         pcc.hydrate(tender)
         if tender.budget is not None and not (
             cfg["min_budget"] <= tender.budget <= cfg["max_budget"]
         ):
-            print(f"[{idx}/{len(hits)}] skip {money(tender.budget)} | {tender.title}")
+            print(f"[{idx}/{len(hits)}] skip-detail {money(tender.budget)} | {tender.title}")
             continue
         # Historical requests are relatively expensive; only enrich viable budget candidates.
         enrich_history(tender)
