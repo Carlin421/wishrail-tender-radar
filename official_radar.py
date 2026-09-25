@@ -98,19 +98,73 @@ def enrich_history(t: Tender, timeout: int = 15) -> None:
             matches.append(item)
 
     matches.sort(key=lambda x: float(x.get("_sim", 0)), reverse=True)
-    matches = matches[:20]
+    matches = matches[:12]
     t.similar_awards = len(matches)
     winners: list[str] = []
     awarded_cases = 0
+    bidder_counts: list[int] = []
+
+    # The keyword endpoint already contains merged award winners for many rows.
     for row in matches:
         names = merchant_names(row)
         if names:
             awarded_cases += 1
             winners.extend(set(names))
 
+    # Pull a small detail sample to estimate competition intensity.
+    for row in matches[:8]:
+        job = str(row.get("job_number") or row.get("id") or "").strip()
+        unit_key = str(row.get("unit_id") or row.get("unit") or "").strip()
+        if not job:
+            continue
+        detail_url = f"https://pcc.mlwmlw.org/api/tender/{quote(job, safe='')}"
+        if unit_key:
+            detail_url += f"/{quote(unit_key, safe='')}"
+        try:
+            detail_response = requests.get(
+                detail_url,
+                timeout=10,
+                headers={"User-Agent": "WishRail-Tender-Radar/0.2", "Accept": "application/json"},
+            )
+            detail_response.raise_for_status()
+            docs = detail_response.json()
+            if not isinstance(docs, list):
+                continue
+            # Prefer a document with candidate/award data.
+            doc = next(
+                (d for d in docs if isinstance(d, dict) and (d.get("candidates") or d.get("award"))),
+                docs[0] if docs else None,
+            )
+            if not isinstance(doc, dict):
+                continue
+            candidates = doc.get("candidates") or []
+            if isinstance(candidates, list) and candidates:
+                bidder_counts.append(len(candidates))
+            # Some rows don't expose merchants in keyword search but do in detail.
+            detail_merchants = merchant_names(doc)
+            if not detail_merchants and isinstance(doc.get("award"), dict):
+                detail_merchants = merchant_names(doc["award"])
+            if detail_merchants and not merchant_names(row):
+                awarded_cases += 1
+                winners.extend(set(detail_merchants))
+        except Exception:
+            continue
+
+    if bidder_counts:
+        t.history_samples = len(bidder_counts)
+        t.avg_bidders = sum(bidder_counts) / len(bidder_counts)
+        t.single_bid_ratio = sum(1 for n in bidder_counts if n == 1) / len(bidder_counts)
+
+    note_parts = [f"近18個月同機關相似案 {len(matches)} 件"]
+    if bidder_counts:
+        note_parts.append(
+            f"競爭樣本 {len(bidder_counts)} 件，平均 {t.avg_bidders:.1f} 家投標，"
+            f"單一投標約 {t.single_bid_ratio:.0%}"
+        )
+
     if not winners:
-        if matches:
-            t.historical_note = f"近18個月找到 {len(matches)} 件同機關相似案，但未取得足夠得標廠商資料"
+        note_parts.append("未取得足夠得標廠商資料")
+        t.historical_note = "；".join(note_parts)
         return
 
     vendor, wins = Counter(winners).most_common(1)[0]
@@ -125,10 +179,8 @@ def enrich_history(t: Tender, timeout: int = 15) -> None:
         t.incumbent_risk = "MEDIUM"
     else:
         t.incumbent_risk = "LOW"
-    t.historical_note = (
-        f"近18個月同機關相似案 {len(matches)} 件；"
-        f"有得標資料 {awarded_cases} 件；最高集中廠商 {vendor} 約 {ratio:.0%}"
-    )
+    note_parts.append(f"最高集中廠商 {vendor} 約 {ratio:.0%}")
+    t.historical_note = "；".join(note_parts)
 
 def has(text: str, words: list[str]) -> bool:
     low = text.lower()
@@ -233,6 +285,20 @@ def score(t: Tender, cfg: dict) -> None:
     elif t.incumbent_risk == "LOW_CONFIDENCE":
         risks.append("歷史樣本不足，incumbent 判定低信心")
 
+    if t.avg_bidders is not None and t.history_samples >= 2:
+        if t.avg_bidders <= 1.5:
+            value += 6
+            reasons.append(f"+6 歷史競爭低：平均 {t.avg_bidders:.1f} 家投標")
+        elif t.avg_bidders <= 2.5:
+            value += 3
+            reasons.append(f"+3 歷史競爭偏低：平均 {t.avg_bidders:.1f} 家投標")
+        elif t.avg_bidders >= 5:
+            value -= 5
+            risks.append(f"-5 歷史競爭較高：平均 {t.avg_bidders:.1f} 家投標")
+    if t.single_bid_ratio is not None and t.history_samples >= 3 and t.single_bid_ratio >= 0.5:
+        value += 3
+        reasons.append(f"+3 同類案單一投標比例 {t.single_bid_ratio:.0%}")
+
     t.score = max(0, min(100, int(value)))
     t.reasons = reasons
     t.risks = risks
@@ -302,6 +368,9 @@ def report(rows: list[Tender], top: int) -> Path:
             f"- Incumbent：{t.incumbent_risk}"
             + (f"；{t.incumbent_vendor} 約 {t.incumbent_ratio:.0%}" if t.incumbent_vendor and t.incumbent_ratio is not None else ""),
             f"- 歷史訊號：{t.historical_note or '未取得足夠歷史資料'}",
+            f"- 歷史競爭："
+            + (f"平均 {t.avg_bidders:.1f} 家投標；單一投標 {t.single_bid_ratio:.0%}（樣本 {t.history_samples}）"
+               if t.avg_bidders is not None and t.single_bid_ratio is not None else "樣本不足"),
             f"- 官方公告：{t.url or 'N/A'}",
             "",
             "**加分：** " + ("；".join(t.reasons) if t.reasons else "無"),
