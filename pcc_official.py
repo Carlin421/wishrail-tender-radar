@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import time
 from dataclasses import dataclass, field, asdict
@@ -334,35 +333,56 @@ class PCC:
         if not tender.url:
             tender.risks.append("官方 detail URL 缺失")
             return tender
-        try:
-            fresh = requests.Session()
-            fresh.headers.update({
-                "User-Agent": UA,
-                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-                "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
-            })
-            response = fresh.get(tender.url, timeout=35, allow_redirects=True)
-            response.raise_for_status()
-            response.encoding = "utf-8"
-            html = response.text
-            if "Web Page Blocked" in html:
-                raise RuntimeError("PCC WAF blocked detail response")
-            soup = BeautifulSoup(html, "html.parser")
-        except Exception as exc:
-            tender.risks.append(f"官方 detail 讀取失敗: {exc}")
+        last_error = None
+        soup = None
+        for attempt in range(4):
+            try:
+                # PCC can throttle a long-lived session. Use a fresh session per attempt.
+                fresh = requests.Session()
+                fresh.headers.update({
+                    "User-Agent": UA,
+                    "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
+                    "Cache-Control": "no-cache",
+                })
+                if attempt:
+                    time.sleep(1.5 * attempt)
+                response = fresh.get(tender.url, timeout=35, allow_redirects=True)
+                response.raise_for_status()
+                response.encoding = "utf-8"
+                html = response.text
+                if "Web Page Blocked" in html:
+                    raise RuntimeError("PCC WAF blocked detail response")
+                candidate_soup = BeautifulSoup(html, "html.parser")
+                # A valid detail page has at least the tender name or one of the stable PCC fields.
+                if not (
+                    candidate_soup.find(id="tenderNameText")
+                    or candidate_soup.find(id="budget")
+                    or candidate_soup.find(id="spdt")
+                ):
+                    raise RuntimeError("PCC detail shell returned without tender fields")
+                soup = candidate_soup
+                break
+            except Exception as exc:
+                last_error = exc
+
+        if soup is None:
+            tender.risks.append(f"官方 detail 讀取失敗: {last_error}")
+            self._fallback_structured_detail(tender)
             return tender
 
         main = soup.select_one("#print_area") or soup.body
         tender.detail_text = clean(main)[:50000] if main else ""
         flat_text = tender.detail_text or clean(soup)
 
-        detail_budget = parse_money(field_value(soup, "預算金額"))
-        if detail_budget is not None:
-            tender.budget = detail_budget
+        # Prefer stable PCC element IDs; labels differ between notice variants.
+        budget_node = soup.find(id="budget")
+        if budget_node:
+            tender.budget = parse_money(budget_node.get("value") or clean(budget_node))
         if tender.budget is None:
-            budget_node = soup.find(id="budget")
-            if budget_node:
-                tender.budget = parse_money(budget_node.get("value") or clean(budget_node))
+            detail_budget = parse_money(field_value(soup, "預算金額"))
+            if detail_budget is not None:
+                tender.budget = detail_budget
         if tender.budget is None:
             tender.budget = money_from_text(flat_text)
         detail_deadline = parse_date(field_value(soup, "截止投標"))
@@ -386,8 +406,10 @@ class PCC:
         if not tender.award_type:
             tender.award_type = text_after_label(flat_text, "決標方式")
 
+        vendor_desc = soup.find(id="vendorDescInput")
         tender.qualification = (
-            field_value(soup, "廠商資格摘要")
+            (str(vendor_desc.get("value") or "").strip() if vendor_desc else "")
+            or field_value(soup, "廠商資格摘要")
             or field_value(soup, "投標廠商資格及資格文件之附加說明")
             or text_after_label(flat_text, "廠商資格摘要", 1200)
             or text_after_label(flat_text, "投標廠商資格及資格文件之附加說明", 1200)
@@ -405,25 +427,5 @@ class PCC:
             or text_after_label(flat_text, "履約保證金")
         )
         self._fallback_structured_detail(tender)
-
-        # Temporary structured diagnostics for notice variants whose fields are still missing.
-        if tender.budget is None or not tender.deadline:
-            diagnostic = []
-            for node in soup.find_all(["input", "span", "td", "th", "label"]):
-                node_id = str(node.get("id") or "").strip()
-                node_name = str(node.get("name") or "").strip()
-                node_text = clean(node)[:120]
-                node_value = str(node.get("value") or "").strip()[:120]
-                combined = " ".join([node_id, node_name, node_text, node_value])
-                if any(key in combined for key in ["預算", "截止投標", "截止收件", "決標方式", "押標", "履約保證"]):
-                    diagnostic.append({
-                        "tag": node.name,
-                        "id": node_id,
-                        "name": node_name,
-                        "text": node_text,
-                        "value": node_value,
-                    })
-            if diagnostic:
-                print("PCC_FIELD_DIAGNOSTIC", tender.job_number, json.dumps(diagnostic[:40], ensure_ascii=False))
 
         return tender
