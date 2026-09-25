@@ -308,6 +308,12 @@ class PCC:
                 tender.budget = parse_money(budget_node.get("value") or clean(budget_node))
         if tender.budget is None:
             tender.budget = money_from_text(flat_text)
+        if tender.budget is None:
+            page_title = clean(soup.title) if soup.title else ""
+            print(
+                f"[detail-debug] {tender.job_number} final={response.url} "
+                f"title={page_title!r} text={flat_text[:320]!r}"
+            )
 
         tender.deadline = parse_date(field_value(soup, "截止投標"))
         if not tender.deadline:
