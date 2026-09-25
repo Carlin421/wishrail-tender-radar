@@ -447,7 +447,7 @@ def report(rows: list[Tender], top: int) -> Path:
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
 
-def main(days: int, top: int) -> int:
+def main(days: int, top: int, skip_history: bool = False) -> int:
     cfg = json.loads(Path("config.json").read_text(encoding="utf-8"))
     pcc = PCC()
     now = datetime.now(TAIPEI)
@@ -489,7 +489,10 @@ def main(days: int, top: int) -> int:
             print(f"[{idx}/{len(hits)}] skip-detail {money(tender.budget)} | {tender.title}")
             continue
         # Historical requests are relatively expensive; only enrich viable budget candidates.
-        enrich_history(tender)
+        if not skip_history:
+            enrich_history(tender)
+        else:
+            tender.historical_note = "CI smoke test：略過歷史 enrichment"
         score(tender, cfg)
         candidates.append(tender)
         print(
@@ -509,5 +512,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WishRail / 贊尼工作室政府標案雷達")
     parser.add_argument("--days", type=int, default=5)
     parser.add_argument("--top", type=int, default=15)
+    parser.add_argument("--skip-history", action="store_true", help="skip incumbent/competition enrichment")
     args = parser.parse_args()
-    raise SystemExit(main(args.days, args.top))
+    raise SystemExit(main(args.days, args.top, args.skip_history))
