@@ -43,6 +43,9 @@ class Tender:
     incumbent_vendor: str = ""
     incumbent_ratio: float | None = None
     similar_awards: int = 0
+    avg_bidders: float | None = None
+    single_bid_ratio: float | None = None
+    history_samples: int = 0
     historical_note: str = ""
     score: int = 0
     reasons: list[str] = field(default_factory=list)
