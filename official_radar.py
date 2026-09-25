@@ -83,14 +83,19 @@ def enrich_history(t: Tender, timeout: int = 7) -> None:
         t.historical_note = f"歷史 enrichment 暫時無法取得：{type(exc).__name__}"
         return
 
+    def norm_unit(value: str) -> str:
+        return re.sub(r"[\s　]+", "", str(value or "")).replace("臺", "台")
+
     matches: list[dict] = []
+    target_unit = norm_unit(t.unit)
     for row in rows:
         row_unit = str(row.get("unit") or "").strip()
         row_title = str(row.get("name") or "").strip()
         if not row_title or row_title == t.title:
             continue
-        # Same procuring unit is the strongest incumbent signal.
-        if t.unit and row_unit and t.unit != row_unit:
+        # Same procuring unit is the strongest incumbent signal, but normalize
+        # whitespace and 台/臺 differences before comparing.
+        if target_unit and row_unit and target_unit != norm_unit(row_unit):
             continue
         sim = title_similarity(t.title, row_title)
         if sim >= 0.36:
@@ -114,48 +119,68 @@ def enrich_history(t: Tender, timeout: int = 7) -> None:
 
     # Pull a bounded detail sample to estimate competition intensity.
     # Historical data is advisory, so never let a slow mirror block the daily report.
-    def fetch_history_detail(row: dict) -> tuple[int | None, list[str]]:
+    def fetch_history_detail(row: dict) -> tuple[int | None, list[str], bool]:
         job = str(row.get("job_number") or row.get("id") or "").strip()
-        unit_key = str(row.get("unit_id") or row.get("unit") or "").strip()
+        unit_id = str(row.get("unit_id") or "").strip()
+        unit_name = str(row.get("unit") or "").strip()
         if not job:
-            return None, []
-        detail_url = f"https://pcc.mlwmlw.org/api/tender/{quote(job, safe='')}"
-        if unit_key:
-            detail_url += f"/{quote(unit_key, safe='')}"
-        try:
-            detail_response = requests.get(
-                detail_url,
-                timeout=5,
-                headers={"User-Agent": "WishRail-Tender-Radar/0.3", "Accept": "application/json"},
-            )
-            detail_response.raise_for_status()
-            docs = detail_response.json()
-            if not isinstance(docs, list):
-                return None, []
-            doc = next(
-                (d for d in docs if isinstance(d, dict) and (d.get("candidates") or d.get("award"))),
-                docs[0] if docs else None,
-            )
-            if not isinstance(doc, dict):
-                return None, []
-            candidates = doc.get("candidates") or []
-            count = len(candidates) if isinstance(candidates, list) and candidates else None
-            names = merchant_names(doc)
-            if not names and isinstance(doc.get("award"), dict):
-                names = merchant_names(doc["award"])
-            return count, names
-        except Exception:
-            return None, []
+            return None, [], False
 
-    sample_rows = matches[:6]
+        base = f"https://pcc.mlwmlw.org/api/tender/{quote(job, safe='')}"
+        urls: list[str] = []
+        for key in (unit_id, unit_name):
+            if key:
+                urls.append(base + f"/{quote(key, safe='')}")
+        urls.append(base)
+
+        docs: list[dict] = []
+        for detail_url in dict.fromkeys(urls):
+            try:
+                detail_response = requests.get(
+                    detail_url,
+                    timeout=6,
+                    headers={"User-Agent": "WishRail-Tender-Radar/0.4", "Accept": "application/json"},
+                )
+                detail_response.raise_for_status()
+                payload = detail_response.json()
+                if isinstance(payload, list) and payload:
+                    docs = [d for d in payload if isinstance(d, dict)]
+                    if docs:
+                        break
+            except Exception:
+                continue
+
+        if not docs:
+            return None, [], False
+
+        # Prefer the record carrying award/candidate data, then the most recent row.
+        doc = next((d for d in docs if d.get("candidates") or d.get("award") or d.get("merchants")), docs[0])
+        candidates = doc.get("candidates") or []
+        count = len(candidates) if isinstance(candidates, list) and candidates else None
+        names = merchant_names(doc)
+        if not names and isinstance(doc.get("award"), dict):
+            names = merchant_names(doc["award"])
+
+        # Treat an explicit award record with no winner as a failed/no-award signal.
+        has_award_record = bool(doc.get("award")) or "決標" in str(doc.get("type") or "")
+        failed = bool(has_award_record and not names)
+        return count, names, failed
+
+    sample_rows = matches[:8]
+    failed_cases = 0
+    detailed_cases = 0
     if sample_rows:
         with ThreadPoolExecutor(max_workers=min(4, len(sample_rows))) as pool:
             future_rows = {pool.submit(fetch_history_detail, row): row for row in sample_rows}
             for future in as_completed(future_rows):
                 row = future_rows[future]
-                count, detail_merchants = future.result()
+                count, detail_merchants, failed = future.result()
                 if count is not None:
                     bidder_counts.append(count)
+                if count is not None or detail_merchants or failed:
+                    detailed_cases += 1
+                if failed:
+                    failed_cases += 1
                 if detail_merchants and not merchant_names(row):
                     awarded_cases += 1
                     winners.extend(set(detail_merchants))
@@ -164,6 +189,9 @@ def enrich_history(t: Tender, timeout: int = 7) -> None:
         t.history_samples = len(bidder_counts)
         t.avg_bidders = sum(bidder_counts) / len(bidder_counts)
         t.single_bid_ratio = sum(1 for n in bidder_counts if n == 1) / len(bidder_counts)
+    t.failed_history_cases = failed_cases
+    if detailed_cases:
+        t.failed_history_ratio = failed_cases / detailed_cases
 
     note_parts = [f"近18個月同機關相似案 {len(matches)} 件"]
     if bidder_counts:
@@ -171,6 +199,8 @@ def enrich_history(t: Tender, timeout: int = 7) -> None:
             f"競爭樣本 {len(bidder_counts)} 件，平均 {t.avg_bidders:.1f} 家投標，"
             f"單一投標約 {t.single_bid_ratio:.0%}"
         )
+    if t.failed_history_ratio is not None:
+        note_parts.append(f"無得標/流標訊號約 {t.failed_history_ratio:.0%}（{failed_cases}/{detailed_cases}）")
 
     if not winners:
         note_parts.append("未取得足夠得標廠商資料")
@@ -308,6 +338,13 @@ def score(t: Tender, cfg: dict) -> None:
     if t.single_bid_ratio is not None and t.history_samples >= 3 and t.single_bid_ratio >= 0.5:
         value += 3
         reasons.append(f"+3 同類案單一投標比例 {t.single_bid_ratio:.0%}")
+    if t.failed_history_ratio is not None and t.failed_history_cases >= 1:
+        if t.failed_history_ratio >= 0.4:
+            value += 4
+            reasons.append(f"+4 歷史流標/無得標訊號偏高 {t.failed_history_ratio:.0%}")
+        elif t.failed_history_ratio >= 0.2:
+            value += 2
+            reasons.append(f"+2 有歷史流標/無得標訊號 {t.failed_history_ratio:.0%}")
 
     # Safety gate for incomplete notices: never elevate an unknown-budget lead to green/BID.
     if t.budget is None:
@@ -389,6 +426,9 @@ def report(rows: list[Tender], top: int) -> Path:
             f"- 歷史競爭："
             + (f"平均 {t.avg_bidders:.1f} 家投標；單一投標 {t.single_bid_ratio:.0%}（樣本 {t.history_samples}）"
                if t.avg_bidders is not None and t.single_bid_ratio is not None else "樣本不足"),
+            f"- 流標/無得標訊號："
+            + (f"{t.failed_history_ratio:.0%}（{t.failed_history_cases} 件）"
+               if t.failed_history_ratio is not None else "樣本不足"),
             f"- 官方公告：{t.url or 'N/A'}",
             "",
             "**加分：** " + ("；".join(t.reasons) if t.reasons else "無"),
