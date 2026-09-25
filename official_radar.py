@@ -492,6 +492,7 @@ def main(days: int, top: int, skip_history: bool = False) -> int:
         if not skip_history:
             enrich_history(tender)
         else:
+            tender.incumbent_risk = "SKIPPED_CI"
             tender.historical_note = "CI smoke test：略過歷史 enrichment"
         score(tender, cfg)
         candidates.append(tender)
