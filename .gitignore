@@ -4,4 +4,3 @@ __pycache__/
 .venv/
 .env
 tender_radar.db
-reports/*.md
