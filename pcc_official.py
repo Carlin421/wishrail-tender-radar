@@ -39,6 +39,11 @@ class Tender:
     bid_bond: str = ""
     performance_bond: str = ""
     detail_text: str = ""
+    incumbent_risk: str = "UNKNOWN"
+    incumbent_vendor: str = ""
+    incumbent_ratio: float | None = None
+    similar_awards: int = 0
+    historical_note: str = ""
     score: int = 0
     reasons: list[str] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
@@ -104,6 +109,50 @@ def parse_listing(text: str) -> tuple[str, str, str] | None:
     else:
         return None
     return unit.strip(), job.strip(), title.strip()
+
+
+def text_after_label(text: str, label: str, max_len: int = 240) -> str:
+    """Best-effort extraction from PCC printable text when table/ID parsing differs by notice type."""
+    compact = re.sub(r"[\t\r ]+", " ", text or "")
+    patterns = [
+        rf"{re.escape(label)}\s*[：:]?\s*([^\n]{{1,{max_len}}})",
+        rf"{re.escape(label)}\s*[：:]?\s*(.{{1,{max_len}}}?)(?=\s{{2,}}|\n|$)",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, compact, flags=re.S)
+        if m:
+            return " ".join(m.group(1).strip().split())
+    return ""
+
+def money_from_text(text: str) -> int | None:
+    for label in ("預算金額", "採購金額", "預算金額是否公開"):
+        value = text_after_label(text, label)
+        amount = parse_money(value)
+        if amount:
+            return amount
+    # PCC often renders "預算金額 1,450,000元" in a flat printable block.
+    for pattern in (
+        r"預算金額[^\d]{0,40}([\d,]{4,})\s*元",
+        r"預算金額[^\d]{0,40}([\d.]+)\s*萬",
+    ):
+        m = re.search(pattern, text or "", flags=re.S)
+        if m:
+            if "萬" in m.group(0):
+                return int(float(m.group(1).replace(",", "")) * 10000)
+            return int(m.group(1).replace(",", ""))
+    return None
+
+def deadline_from_text(text: str) -> str:
+    for label in ("截止投標", "截止收件時間", "截止投標時間"):
+        value = text_after_label(text, label)
+        parsed = parse_date(value)
+        if parsed and parsed != value:
+            return parsed
+        m = re.search(r"(\d{2,4}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?)", value)
+        if m:
+            return parse_date(m.group(1))
+    m = re.search(r"截止投標[^\d]{0,40}(\d{2,4}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?)", text or "", flags=re.S)
+    return parse_date(m.group(1)) if m else ""
 
 class PCC:
     def __init__(self, delay: float = 0.3):
@@ -183,31 +232,53 @@ class PCC:
             tender.risks.append(f"官方 detail 讀取失敗: {exc}")
             return tender
 
+        main = soup.select_one("#print_area") or soup.body
+        tender.detail_text = clean(main)[:50000] if main else ""
+        flat_text = tender.detail_text or clean(soup)
+
         tender.budget = parse_money(field_value(soup, "預算金額"))
         if tender.budget is None:
             budget_node = soup.find(id="budget")
-            if budget_node and budget_node.get("value"):
-                tender.budget = parse_money(budget_node.get("value"))
+            if budget_node:
+                tender.budget = parse_money(budget_node.get("value") or clean(budget_node))
+        if tender.budget is None:
+            tender.budget = money_from_text(flat_text)
 
         tender.deadline = parse_date(field_value(soup, "截止投標"))
         if not tender.deadline:
-            deadline_node = soup.find(id="spdt")
-            if deadline_node:
-                tender.deadline = parse_date(clean(deadline_node))
+            for node_id in ("spdt", "tenderDeadline", "deadline"):
+                deadline_node = soup.find(id=node_id)
+                if deadline_node:
+                    tender.deadline = parse_date(deadline_node.get("value") or clean(deadline_node))
+                    if tender.deadline:
+                        break
+        if not tender.deadline:
+            tender.deadline = deadline_from_text(flat_text)
 
         tender.award_type = field_value(soup, "決標方式")
         if not tender.award_type:
             award_node = soup.find(id="fkPmsAwardWay")
             if award_node:
-                tender.award_type = clean(award_node)
+                tender.award_type = award_node.get("value") or clean(award_node)
+        if not tender.award_type:
+            tender.award_type = text_after_label(flat_text, "決標方式")
+
         tender.qualification = (
             field_value(soup, "廠商資格摘要")
             or field_value(soup, "投標廠商資格及資格文件之附加說明")
+            or text_after_label(flat_text, "廠商資格摘要", 1200)
+            or text_after_label(flat_text, "投標廠商資格及資格文件之附加說明", 1200)
         )
-        tender.bid_bond = field_value(soup, "是否須繳納押標金") or field_value(soup, "押標金")
+        tender.bid_bond = (
+            field_value(soup, "是否須繳納押標金")
+            or field_value(soup, "押標金")
+            or text_after_label(flat_text, "是否須繳納押標金")
+            or text_after_label(flat_text, "押標金")
+        )
         tender.performance_bond = (
-            field_value(soup, "是否須繳納履約保證金") or field_value(soup, "履約保證金")
+            field_value(soup, "是否須繳納履約保證金")
+            or field_value(soup, "履約保證金")
+            or text_after_label(flat_text, "是否須繳納履約保證金")
+            or text_after_label(flat_text, "履約保證金")
         )
-        main = soup.select_one("#print_area") or soup.body
-        tender.detail_text = clean(main)[:30000] if main else ""
         return tender
