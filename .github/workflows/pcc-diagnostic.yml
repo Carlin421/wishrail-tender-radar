@@ -1,7 +1,6 @@
 name: PCC Detail Diagnostic
 
 on:
-  workflow_dispatch:
   push:
     paths:
       - ".github/workflows/pcc-diagnostic.yml"
@@ -15,35 +14,22 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - name: Diagnose two PCC details
+      - name: Verify production hydrate on known tenders
         run: |
           python - <<'PY'
-          import json, requests
-          from bs4 import BeautifulSoup
-          from pcc_official import PCC, UA, clean
+          from pcc_official import PCC
           pcc=PCC(delay=0.1)
-          rows=pcc.daily("20260924")
           targets={"115-04-02-04-E","115-77A"}
-          for t in rows:
-              if t.job_number not in targets:
-                  continue
-              print("\n===TARGET===",t.job_number,t.title,t.url)
-              s=requests.Session()
-              s.headers.update({"User-Agent":UA,"Accept":"text/html,application/xhtml+xml,*/*;q=0.8","Accept-Language":"zh-TW,zh;q=0.9,en;q=0.7"})
-              r=s.get(t.url,timeout=35,allow_redirects=True)
-              print("STATUS",r.status_code)
-              print("FINAL_URL",r.url)
-              print("LEN",len(r.text))
-              soup=BeautifulSoup(r.text,"html.parser")
-              print("TITLE",clean(soup.title))
-              print("TEXT_HEAD",clean(soup)[:2500])
-              items=[]
-              for node in soup.find_all(["input","span","div","td","th","label","form"]):
-                  nid=str(node.get("id") or "")
-                  name=str(node.get("name") or "")
-                  val=str(node.get("value") or "")
-                  txt=clean(node)[:150]
-                  if nid or name or val:
-                      items.append({"tag":node.name,"id":nid,"name":name,"value":val[:150],"text":txt})
-              print("STRUCT",json.dumps(items[:250],ensure_ascii=False))
+          found={t.job_number:t for t in pcc.daily("20260924") if t.job_number in targets}
+          for job in sorted(targets):
+              t=found[job]
+              pcc.hydrate(t)
+              print("VERIFY", job, "budget=", t.budget, "deadline=", t.deadline,
+                    "award=", t.award_type, "qualification=", t.qualification[:120])
+          assert found["115-04-02-04-E"].budget == 1450000
+          assert found["115-04-02-04-E"].deadline.startswith("2026-09-29 17:00")
+          assert "最有利標" in found["115-04-02-04-E"].award_type
+          assert found["115-77A"].budget == 3100000
+          assert found["115-77A"].deadline.startswith("2026-10-13 17:00")
+          print("KNOWN_TENDER_HYDRATE_OK")
           PY
