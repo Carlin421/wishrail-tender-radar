@@ -37,12 +37,7 @@ jobs:
         run: PYTHONPATH=. pytest -q
 
       - name: Scan official PCC data
-        run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            python official_radar.py --days 5 --top 15
-          else
-            python official_radar.py --days 2 --top 15
-          fi
+        run: python official_radar.py --days 5 --top 15
 
       - name: Commit daily report
         if: success() && github.event_name != 'push'
