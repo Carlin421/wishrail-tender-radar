@@ -73,3 +73,21 @@ def test_failed_history_signal_can_raise_priority():
     official_score(base, CFG)
     official_score(boosted, CFG)
     assert boosted.score > base.score
+
+
+from line_push import parse_top_rows, format_line_message
+
+def test_line_message_parses_top_candidate():
+    markdown = """# WishRail Tender Radar — 2026-09-25
+
+|分數|建議|標案|機關|預算|截止|Incumbent|公告類型|
+|---:|---|---|---|---:|---|---|---|
+|**88**|🔥 優先 BID|[智慧平台建置](https://example.com/tender)|南投縣某鄉公所|NTD 800,000|2026-10-10 17:00|LOW|公開取得報價單或企劃書公告|
+"""
+    rows = parse_top_rows(markdown)
+    assert rows[0]["score"] == "88"
+    assert rows[0]["title"] == "智慧平台建置"
+    message = format_line_message(markdown)
+    assert "88/100" in message
+    assert "南投縣某鄉公所" in message
+    assert "https://example.com/tender" in message
