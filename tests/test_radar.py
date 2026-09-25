@@ -27,3 +27,22 @@ def test_incumbent_penalty():
     b = Tender("x", "2", "網站建置", unit_name="臺中市某區公所", budget=500000, incumbent_risk="HIGH")
     score(a, CFG); score(b, CFG)
     assert b.score < a.score
+
+
+from pcc_official import money_from_text, deadline_from_text
+from official_radar import title_similarity, merchant_names
+
+def test_official_money_fallback():
+    assert money_from_text("採購資料 預算金額 新臺幣 1,450,000 元 是否公開 是") == 1450000
+    assert money_from_text("預算金額：145 萬元") == 1450000
+
+def test_official_deadline_fallback():
+    value = deadline_from_text("領投開標 截止投標：115/09/30 17:00 開標時間")
+    assert value.startswith("2026-09-30 17:00")
+
+def test_history_similarity_and_merchants():
+    assert title_similarity(
+        "116年度街友服務資訊系統功能增修案",
+        "115年度街友服務資訊系統維護及功能擴充"
+    ) >= .36
+    assert merchant_names({"merchants": [{"name": "甲資訊有限公司"}, {"name": "甲資訊有限公司"}]}) == ["甲資訊有限公司"]
