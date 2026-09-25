@@ -1,0 +1,51 @@
+name: Tender Radar CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "reports/**"
+  workflow_dispatch:
+  schedule:
+    - cron: "10 0 * * 1-5"
+
+permissions:
+  contents: write
+
+jobs:
+  test-and-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Unit tests
+        run: pytest -q
+
+      - name: Scan live PCC data
+        env:
+          OPENFUN_TOKEN: ${{ secrets.OPENFUN_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            python radar.py --days 2 --top 15
+          else
+            python radar.py --days 2 --top 15 --skip-incumbent
+          fi
+
+      - name: Commit daily report
+        if: success()
+        run: |
+          git config user.name "tender-radar-bot"
+          git config user.email "tender-radar-bot@users.noreply.github.com"
+          git add reports/
+          git diff --cached --quiet || git commit -m "chore: update tender report [skip ci]"
+          git push
