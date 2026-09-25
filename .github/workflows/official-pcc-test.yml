@@ -9,11 +9,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch and inspect official daily list
+      - name: Inspect official daily list dates
         run: |
-          curl -L --fail-with-body --max-time 30             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"             --get             --data-urlencode "dateStr=115年09月25日"             "https://web.pcc.gov.tw/prkms/tender/common/noticeDate/readPublish"             -o /tmp/pcc.html
-          echo "SIZE"; wc -c /tmp/pcc.html
-          echo "LINKS"
-          grep -Eo 'href="[^"]+"' /tmp/pcc.html | grep -E 'tender|notice|Query|redirect|pkPms' | head -30 || true
-          echo "TABLE MARKERS"
-          grep -n -E '標案名稱|機關名稱|預算金額|截止投標|table|tbody|td' /tmp/pcc.html | head -100 || true
+          set -e
+          for D in "115年09月23日" "115年09月24日" "115年09月25日"; do
+            echo "===== $D ====="
+            curl -sS -L --fail-with-body --max-time 30               -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"               --get --data-urlencode "dateStr=$D"               "https://web.pcc.gov.tw/prkms/tender/common/noticeDate/readPublish"               -o /tmp/pcc.html
+            wc -c /tmp/pcc.html
+            grep -n -E '查無|總筆|筆資料|公告日期|標案案號|標案名稱|機關名稱|noticeDate/redirectPublic|pkPmsMain|fn=' /tmp/pcc.html | head -80 || true
+            echo
+          done
