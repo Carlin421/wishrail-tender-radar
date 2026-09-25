@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 import requests
 from bs4 import BeautifulSoup
@@ -73,6 +73,12 @@ def parse_date(value: Any) -> str:
     s = str(value or "").strip()
     if not s:
         return ""
+    iso = s.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(iso)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        pass
     for fmt in ("%Y/%m/%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d",
                 "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
@@ -213,6 +219,50 @@ class PCC:
             ))
         return out
 
+    def _fallback_structured_detail(self, tender: Tender) -> None:
+        """Fill missing budget/deadline from public structured mirror by exact job number.
+        Official PCC remains the source of truth; this is only a missing-field fallback.
+        """
+        if tender.budget is not None and tender.deadline:
+            return
+        if not tender.job_number:
+            return
+        url = f"https://pcc.mlwmlw.org/api/tender/{quote(tender.job_number, safe='')}"
+        if tender.unit:
+            url += f"/{quote(tender.unit, safe='')}"
+        try:
+            r = requests.get(
+                url,
+                timeout=12,
+                headers={"User-Agent": "WishRail-Tender-Radar/0.2", "Accept": "application/json"},
+            )
+            r.raise_for_status()
+            docs = r.json()
+            if not isinstance(docs, list) or not docs:
+                return
+
+            # Prefer exact title; otherwise take the newest-looking matching job record.
+            exact = [
+                d for d in docs
+                if isinstance(d, dict)
+                and str(d.get("name") or "").strip() == tender.title.strip()
+            ]
+            pool = exact or [d for d in docs if isinstance(d, dict)]
+            if not pool:
+                return
+            doc = pool[0]
+
+            if tender.budget is None:
+                tender.budget = parse_money(doc.get("price"))
+                if tender.budget is not None:
+                    tender.reasons.append("預算由公開結構化資料補足")
+            if not tender.deadline:
+                tender.deadline = parse_date(doc.get("end_date"))
+                if tender.deadline:
+                    tender.reasons.append("截止日由公開結構化資料補足")
+        except Exception as exc:
+            tender.risks.append(f"結構化欄位 fallback 失敗: {type(exc).__name__}")
+
     def hydrate(self, tender: Tender) -> Tender:
         if not tender.url:
             tender.risks.append("官方 detail URL 缺失")
@@ -284,4 +334,5 @@ class PCC:
             or text_after_label(flat_text, "是否須繳納履約保證金")
             or text_after_label(flat_text, "履約保證金")
         )
+        self._fallback_structured_detail(tender)
         return tender
