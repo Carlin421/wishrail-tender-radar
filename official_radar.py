@@ -2,14 +2,133 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
+from collections import Counter
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 from pathlib import Path
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
+
+import requests
 
 from pcc_official import PCC, Tender
 
 TAIPEI = ZoneInfo("Asia/Taipei")
+
+
+MLW_KEYWORD = "https://pcc.mlwmlw.org/api/keyword"
+TITLE_STOPWORDS = [
+    "年度", "資訊", "系統", "建置", "開發", "維護", "維運", "委外",
+    "服務", "採購案", "採購", "計畫", "功能", "增修", "擴充", "案"
+]
+
+def normalize_title(text: str) -> str:
+    s = re.sub(r"\d{2,4}年度?", "", (text or "").lower())
+    s = re.sub(r"[^\w\u4e00-\u9fff]+", "", s)
+    for word in TITLE_STOPWORDS:
+        s = s.replace(word, "")
+    return s
+
+def title_similarity(a: str, b: str) -> float:
+    aa, bb = normalize_title(a), normalize_title(b)
+    if not aa or not bb:
+        return 0.0
+    seq = SequenceMatcher(None, aa, bb).ratio()
+    a2 = {aa[i:i+2] for i in range(max(0, len(aa)-1))}
+    b2 = {bb[i:i+2] for i in range(max(0, len(bb)-1))}
+    jac = len(a2 & b2) / len(a2 | b2) if a2 and b2 else 0.0
+    return max(seq, jac)
+
+def history_query(title: str) -> str:
+    cleaned = normalize_title(title)
+    if len(cleaned) >= 4:
+        return cleaned[:18]
+    return re.sub(r"\d+", "", title)[:18].strip() or title[:18]
+
+def merchant_names(row: dict) -> list[str]:
+    out: list[str] = []
+    merchants = row.get("merchants") or []
+    if isinstance(merchants, dict):
+        merchants = [merchants]
+    if isinstance(merchants, list):
+        for merchant in merchants:
+            if isinstance(merchant, dict):
+                name = str(merchant.get("name") or merchant.get("_id") or "").strip()
+            else:
+                name = str(merchant).strip()
+            if name:
+                out.append(name)
+    return list(dict.fromkeys(out))
+
+def enrich_history(t: Tender, timeout: int = 15) -> None:
+    """Enrich with public near-term history. It is advisory and never blocks the scan."""
+    query = history_query(t.title)
+    if not query:
+        return
+    try:
+        url = f"{MLW_KEYWORD}/{quote(query, safe='')}"
+        response = requests.get(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": "WishRail-Tender-Radar/0.2", "Accept": "application/json"},
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list):
+            return
+    except Exception as exc:
+        t.historical_note = f"歷史 enrichment 暫時無法取得：{type(exc).__name__}"
+        return
+
+    matches: list[dict] = []
+    for row in rows:
+        row_unit = str(row.get("unit") or "").strip()
+        row_title = str(row.get("name") or "").strip()
+        if not row_title or row_title == t.title:
+            continue
+        # Same procuring unit is the strongest incumbent signal.
+        if t.unit and row_unit and t.unit != row_unit:
+            continue
+        sim = title_similarity(t.title, row_title)
+        if sim >= 0.36:
+            item = dict(row)
+            item["_sim"] = sim
+            matches.append(item)
+
+    matches.sort(key=lambda x: float(x.get("_sim", 0)), reverse=True)
+    matches = matches[:20]
+    t.similar_awards = len(matches)
+    winners: list[str] = []
+    awarded_cases = 0
+    for row in matches:
+        names = merchant_names(row)
+        if names:
+            awarded_cases += 1
+            winners.extend(set(names))
+
+    if not winners:
+        if matches:
+            t.historical_note = f"近18個月找到 {len(matches)} 件同機關相似案，但未取得足夠得標廠商資料"
+        return
+
+    vendor, wins = Counter(winners).most_common(1)[0]
+    ratio = wins / max(awarded_cases, 1)
+    t.incumbent_vendor = vendor
+    t.incumbent_ratio = ratio
+    if awarded_cases < 3:
+        t.incumbent_risk = "LOW_CONFIDENCE"
+    elif ratio >= 0.65:
+        t.incumbent_risk = "HIGH"
+    elif ratio >= 0.45:
+        t.incumbent_risk = "MEDIUM"
+    else:
+        t.incumbent_risk = "LOW"
+    t.historical_note = (
+        f"近18個月同機關相似案 {len(matches)} 件；"
+        f"有得標資料 {awarded_cases} 件；最高集中廠商 {vendor} 約 {ratio:.0%}"
+    )
 
 def has(text: str, words: list[str]) -> bool:
     low = text.lower()
@@ -103,6 +222,17 @@ def score(t: Tender, cfg: dict) -> None:
         value -= 3
         risks.append("-3 需履約保證金")
 
+    if t.incumbent_risk == "HIGH":
+        value -= 22
+        risks.append(f"-22 Incumbent HIGH：{t.incumbent_vendor}")
+    elif t.incumbent_risk == "MEDIUM":
+        value -= 10
+        risks.append(f"-10 Incumbent MEDIUM：{t.incumbent_vendor}")
+    elif t.incumbent_risk == "LOW":
+        reasons.append("+0 Incumbent LOW")
+    elif t.incumbent_risk == "LOW_CONFIDENCE":
+        risks.append("歷史樣本不足，incumbent 判定低信心")
+
     t.score = max(0, min(100, int(value)))
     t.reasons = reasons
     t.risks = risks
@@ -146,14 +276,15 @@ def report(rows: list[Tender], top: int) -> Path:
         "",
         f"官方 PCC 掃描後候選：**{len(rows)}** 筆。",
         "",
-        "|分數|建議|標案|機關|預算|截止|公告類型|",
-        "|---:|---|---|---|---:|---|---|",
+        "|分數|建議|標案|機關|預算|截止|Incumbent|公告類型|",
+        "|---:|---|---|---|---:|---|---|---|",
     ]
     for t in ranked:
         title = f"[{t.title}]({t.url})" if t.url else t.title
         lines.append(
             f"|**{t.score}**|{recommendation(t.score)}|{title}|{t.unit}|"
-            f"{money(t.budget)}|{t.deadline[:16] or '未知'}|{t.category}|"
+            f"{money(t.budget)}|{t.deadline[:16] or '未知'}|"
+            f"{t.incumbent_risk}{(' / ' + t.incumbent_vendor) if t.incumbent_vendor else ''}|{t.category}|"
         )
 
     for i, t in enumerate(ranked, 1):
@@ -168,6 +299,9 @@ def report(rows: list[Tender], top: int) -> Path:
             f"- 截止：{t.deadline or '未知'}",
             f"- 公告類型：{t.category}",
             f"- 決標方式：{t.award_type or '未知'}",
+            f"- Incumbent：{t.incumbent_risk}"
+            + (f"；{t.incumbent_vendor} 約 {t.incumbent_ratio:.0%}" if t.incumbent_vendor and t.incumbent_ratio is not None else ""),
+            f"- 歷史訊號：{t.historical_note or '未取得足夠歷史資料'}",
             f"- 官方公告：{t.url or 'N/A'}",
             "",
             "**加分：** " + ("；".join(t.reasons) if t.reasons else "無"),
@@ -179,7 +313,7 @@ def report(rows: list[Tender], top: int) -> Path:
         "",
         "---",
         "",
-        "> 核心掃描直接使用政府電子採購網官方公告；目前 incumbent 歷史得標分析尚未併入正式掃描。",
+        "> 核心掃描直接使用政府電子採購網官方公告；incumbent 是近18個月公開歷史資料的輔助訊號，資料不足時會標示 UNKNOWN / LOW_CONFIDENCE。",
         "",
         "> 分數是 Bid/No-Bid 優先級，不是得標機率。投標前仍須閱讀完整招標文件與契約。",
     ]
@@ -214,6 +348,7 @@ def main(days: int, top: int) -> int:
 
     for idx, tender in enumerate(hits, 1):
         pcc.hydrate(tender)
+        enrich_history(tender)
         if tender.budget is not None and not (
             cfg["min_budget"] <= tender.budget <= cfg["max_budget"]
         ):
