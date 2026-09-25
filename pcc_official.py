@@ -212,10 +212,13 @@ class PCC:
                 url = BASE + "/prkms/tender/common/noticeDate/redirectPublic?" + urlencode(
                     {"ds": yyyymmdd, "fn": href}
                 )
+            listing_text = clean(table)
             out.append(Tender(
                 unit=unit, job_number=job, title=title, category=category,
                 publish_date=yyyymmdd, url=url,
                 summary=clean(table.select_one("td.summary")),
+                budget=money_from_text(listing_text),
+                deadline=deadline_from_text(listing_text),
             ))
         return out
 
@@ -301,21 +304,18 @@ class PCC:
         tender.detail_text = clean(main)[:50000] if main else ""
         flat_text = tender.detail_text or clean(soup)
 
-        tender.budget = parse_money(field_value(soup, "預算金額"))
+        detail_budget = parse_money(field_value(soup, "預算金額"))
+        if detail_budget is not None:
+            tender.budget = detail_budget
         if tender.budget is None:
             budget_node = soup.find(id="budget")
             if budget_node:
                 tender.budget = parse_money(budget_node.get("value") or clean(budget_node))
         if tender.budget is None:
             tender.budget = money_from_text(flat_text)
-        if tender.budget is None:
-            page_title = clean(soup.title) if soup.title else ""
-            print(
-                f"[detail-debug] {tender.job_number} final={response.url} "
-                f"title={page_title!r} text={flat_text[:320]!r}"
-            )
-
-        tender.deadline = parse_date(field_value(soup, "截止投標"))
+        detail_deadline = parse_date(field_value(soup, "截止投標"))
+        if detail_deadline:
+            tender.deadline = detail_deadline
         if not tender.deadline:
             for node_id in ("spdt", "tenderDeadline", "deadline"):
                 deadline_node = soup.find(id=node_id)
