@@ -122,6 +122,7 @@ class PCC:
                 time.sleep(self.delay)
                 r = self.s.get(url, timeout=35, allow_redirects=True, **kwargs)
                 r.raise_for_status()
+                r.encoding = "utf-8"
                 if "Web Page Blocked" in r.text:
                     raise RuntimeError("PCC WAF blocked response")
                 return r
