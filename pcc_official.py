@@ -166,7 +166,18 @@ class PCC:
             tender.risks.append("官方 detail URL 缺失")
             return tender
         try:
-            html = self._get(tender.url).text
+            fresh = requests.Session()
+            fresh.headers.update({
+                "User-Agent": UA,
+                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+                "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.7",
+            })
+            response = fresh.get(tender.url, timeout=35, allow_redirects=True)
+            response.raise_for_status()
+            response.encoding = "utf-8"
+            html = response.text
+            if "Web Page Blocked" in html:
+                raise RuntimeError("PCC WAF blocked detail response")
             soup = BeautifulSoup(html, "html.parser")
         except Exception as exc:
             tender.risks.append(f"官方 detail 讀取失敗: {exc}")
