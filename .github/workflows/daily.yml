@@ -37,7 +37,12 @@ jobs:
         run: PYTHONPATH=. pytest -q
 
       - name: Scan official PCC data
-        run: python official_radar.py --days 5 --top 15
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            python official_radar.py --days 5 --top 15 --skip-history
+          else
+            python official_radar.py --days 5 --top 15
+          fi
 
       - name: Validate LINE message
         if: success() && github.event_name == 'push'
