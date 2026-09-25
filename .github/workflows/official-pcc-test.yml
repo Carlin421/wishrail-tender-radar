@@ -9,10 +9,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect official row markup
+      - name: Inspect one official tender detail
         run: |
-          curl -sS -L --fail-with-body --max-time 30             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"             --get --data-urlencode "dateStr=115年09月24日"             "https://web.pcc.gov.tw/prkms/tender/common/noticeDate/readPublish"             -o /tmp/pcc.html
-          echo "PATTERNS"
-          grep -n -E 'showTend|show.*Detail|xml|fn=|標案案號|標案名稱|class="tb' /tmp/pcc.html | head -180 || true
-          echo "FIRST RESULT AREA"
-          sed -n '330,520p' /tmp/pcc.html
+          curl -sS -L --fail-with-body --max-time 30             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"             "https://web.pcc.gov.tw/prkms/tender/common/noticeDate/redirectPublic?ds=20260924&fn=TIQ-1-71121325.xml"             -o /tmp/detail.html
+          wc -c /tmp/detail.html
+          grep -n -E '預算金額|截止投標|廠商資格|標案名稱|決標方式|押標金|履約保證金|Web Page Blocked|validate/check' /tmp/detail.html | head -120 || true
