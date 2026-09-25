@@ -45,7 +45,7 @@ jobs:
           fi
 
       - name: Commit daily report
-        if: success()
+        if: success() && github.event_name != 'push'
         run: |
           git config user.name "tender-radar-bot"
           git config user.email "tender-radar-bot@users.noreply.github.com"
