@@ -39,7 +39,7 @@ jobs:
       - name: Scan official PCC data
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
-            python official_radar.py --days 5 --top 15 --skip-history
+            python official_radar.py --days 3 --top 15 --skip-history
           else
             python official_radar.py --days 5 --top 15
           fi
