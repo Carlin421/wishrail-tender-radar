@@ -16,17 +16,22 @@ def has(text: str, words: list[str]) -> bool:
     return any(word.lower() in low for word in words)
 
 def prefilter(t: Tender, cfg: dict) -> bool:
-    text = f"{t.unit} {t.title} {t.summary}"
+    strong_software = [
+        "資訊", "網站", "平台", "資料庫", "軟體", "API", "人工智慧", "AI",
+        "數位", "APP", "程式", "網路", "管理系統", "服務系統",
+        "查詢系統", "報名系統", "申請系統", "預約系統", "智慧系統"
+    ]
     return (
         has(t.unit, cfg["regions"])
-        and has(text, cfg["include_keywords"])
-        and not has(text, cfg["exclude_keywords"])
+        and has(t.title, strong_software)
+        and not has(t.title, cfg["exclude_keywords"])
     )
 
 def score(t: Tender, cfg: dict) -> None:
     value = 40
     reasons: list[str] = []
     risks = list(t.risks)
+    title_text = t.title
     text = " ".join([
         t.unit, t.title, t.category, t.summary, t.award_type,
         t.qualification, t.detail_text,
@@ -45,13 +50,13 @@ def score(t: Tender, cfg: dict) -> None:
         value += 8
         reasons.append("+8 預算可接受")
 
-    if has(text, ["新建", "建置", "開發", "建立", "導入", "原型", "PoC", "改版", "重建"]):
+    if has(title_text, ["新建", "建置", "開發", "建立", "導入", "原型", "PoC", "改版", "重建"]):
         value += 15
         reasons.append("+15 新建/開發型")
-    if has(text, ["網站", "平台", "後台", "APP", "應用程式", "資料庫"]):
+    if has(title_text, ["網站", "平台", "後台", "APP", "應用程式", "資料庫"]):
         value += 8
         reasons.append("+8 Web/平台/資料庫")
-    if has(text, ["AI", "人工智慧", "LLM", "RAG", "API", "介接", "串接", "智慧"]):
+    if has(title_text, ["AI", "人工智慧", "LLM", "RAG", "API", "介接", "串接", "智慧"]):
         value += 8
         reasons.append("+8 AI/API")
 
