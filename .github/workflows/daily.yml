@@ -7,7 +7,8 @@ on:
       - "reports/**"
   workflow_dispatch:
   schedule:
-    - cron: "10 0 * * 1-5"
+    # 11:10 UTC = 19:10 Taiwan time
+    - cron: "10 11 * * 1-5"
 
 permissions:
   contents: write
@@ -31,15 +32,8 @@ jobs:
       - name: Unit tests
         run: PYTHONPATH=. pytest -q
 
-      - name: Scan live PCC data
-        env:
-          OPENFUN_TOKEN: ${{ secrets.OPENFUN_TOKEN }}
-        run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            python radar.py --days 2 --top 15
-          else
-            python radar.py --days 2 --top 15 --skip-incumbent
-          fi
+      - name: Scan official PCC data
+        run: python official_radar.py --days 5 --top 15
 
       - name: Commit daily report
         if: success()
