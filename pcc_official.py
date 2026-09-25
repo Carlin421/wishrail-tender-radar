@@ -227,27 +227,39 @@ class PCC:
             return
         if not tender.job_number:
             return
-        url = f"https://pcc.mlwmlw.org/api/tender/{quote(tender.job_number, safe='')}"
+        base_url = f"https://pcc.mlwmlw.org/api/tender/{quote(tender.job_number, safe='')}"
+        urls = []
         if tender.unit:
-            url += f"/{quote(tender.unit, safe='')}"
+            urls.append(base_url + f"/{quote(tender.unit, safe='')}")
+        urls.append(base_url)
+
         try:
-            r = requests.get(
-                url,
-                timeout=12,
-                headers={"User-Agent": "WishRail-Tender-Radar/0.2", "Accept": "application/json"},
-            )
-            r.raise_for_status()
-            docs = r.json()
-            if not isinstance(docs, list) or not docs:
+            docs = []
+            for url in urls:
+                r = requests.get(
+                    url,
+                    timeout=8,
+                    headers={"User-Agent": "WishRail-Tender-Radar/0.2", "Accept": "application/json"},
+                )
+                r.raise_for_status()
+                payload = r.json()
+                if isinstance(payload, list) and payload:
+                    docs = payload
+                    break
+            if not docs:
                 return
 
-            # Prefer exact title; otherwise take the newest-looking matching job record.
+            # Prefer exact title, then rows with a usable price, then any matching job row.
             exact = [
                 d for d in docs
                 if isinstance(d, dict)
                 and str(d.get("name") or "").strip() == tender.title.strip()
             ]
-            pool = exact or [d for d in docs if isinstance(d, dict)]
+            priced = [
+                d for d in docs
+                if isinstance(d, dict) and parse_money(d.get("price")) is not None
+            ]
+            pool = exact or priced or [d for d in docs if isinstance(d, dict)]
             if not pool:
                 return
             doc = pool[0]
