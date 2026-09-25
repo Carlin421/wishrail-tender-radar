@@ -174,21 +174,21 @@ class PCC:
 
         tender.budget = parse_money(field_value(soup, "預算金額"))
         if tender.budget is None:
-            m = re.search(r"id=['\"]budget['\"][^>]*value=['\"](\d+)['\"]", html)
-            if m:
-                tender.budget = int(m.group(1))
+            budget_node = soup.find(id="budget")
+            if budget_node and budget_node.get("value"):
+                tender.budget = parse_money(budget_node.get("value"))
 
         tender.deadline = parse_date(field_value(soup, "截止投標"))
         if not tender.deadline:
-            m = re.search(r"id=['\"]spdt['\"][^>]*>([^<]+)<", html)
-            if m:
-                tender.deadline = parse_date(m.group(1).strip())
+            deadline_node = soup.find(id="spdt")
+            if deadline_node:
+                tender.deadline = parse_date(clean(deadline_node))
 
         tender.award_type = field_value(soup, "決標方式")
         if not tender.award_type:
-            m = re.search(r"id=['\"]fkPmsAwardWay['\"][^>]*>([^<]+)<", html)
-            if m:
-                tender.award_type = m.group(1).strip()
+            award_node = soup.find(id="fkPmsAwardWay")
+            if award_node:
+                tender.award_type = clean(award_node)
         tender.qualification = (
             field_value(soup, "廠商資格摘要")
             or field_value(soup, "投標廠商資格及資格文件之附加說明")
