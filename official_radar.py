@@ -417,12 +417,13 @@ def main(days: int, top: int) -> int:
 
     for idx, tender in enumerate(hits, 1):
         pcc.hydrate(tender)
-        enrich_history(tender)
         if tender.budget is not None and not (
             cfg["min_budget"] <= tender.budget <= cfg["max_budget"]
         ):
             print(f"[{idx}/{len(hits)}] skip {money(tender.budget)} | {tender.title}")
             continue
+        # Historical requests are relatively expensive; only enrich viable budget candidates.
+        enrich_history(tender)
         score(tender, cfg)
         candidates.append(tender)
         print(
