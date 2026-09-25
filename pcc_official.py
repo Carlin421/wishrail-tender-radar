@@ -284,50 +284,93 @@ class PCC:
         # This is used only for fields the official detail response failed to expose.
         if tender.budget is None or not tender.deadline or not tender.award_type:
             try:
+                unit_id = ""
                 unit_info_url = "https://pcc.mlwmlw.org/api/unit_info/" + quote(tender.unit, safe="")
-                ur = requests.get(
-                    unit_info_url,
-                    timeout=8,
-                    headers={"User-Agent": "WishRail-Tender-Radar/0.2", "Accept": "application/json"},
-                )
-                ur.raise_for_status()
-                info = ur.json() if ur.content else {}
-                unit_id = str(info.get("_id") or "").strip() if isinstance(info, dict) else ""
+                try:
+                    ur = requests.get(
+                        unit_info_url,
+                        timeout=6,
+                        headers={"User-Agent": "WishRail-Tender-Radar/0.4", "Accept": "application/json"},
+                    )
+                    ur.raise_for_status()
+                    info = ur.json() if ur.content else {}
+                    unit_id = str(info.get("_id") or "").strip() if isinstance(info, dict) else ""
+                except Exception:
+                    unit_id = ""
+
+                # Some agency names differ between PCC and the mirror (for example,
+                # parent-prefixed names). Resolve the exact agency code by job number.
+                if not unit_id and tender.job_number:
+                    try:
+                        search_url = "https://pcc.mlwmlw.org/api/keyword/" + quote(tender.job_number, safe="")
+                        sr = requests.get(
+                            search_url,
+                            timeout=6,
+                            headers={"User-Agent": "WishRail-Tender-Radar/0.4", "Accept": "application/json"},
+                        )
+                        sr.raise_for_status()
+                        rows = sr.json()
+                        if isinstance(rows, list):
+                            exact = [
+                                row for row in rows
+                                if isinstance(row, dict)
+                                and str(row.get("job_number") or row.get("id") or "").strip() == tender.job_number
+                            ]
+                            if exact:
+                                # Prefer a matching title/unit, but exact job number is already a strong key.
+                                exact.sort(
+                                    key=lambda row: int(
+                                        str(row.get("name") or "").strip() == tender.title.strip()
+                                    )
+                                    + int(
+                                        str(row.get("unit") or "").replace("臺", "台").replace(" ", "")
+                                        == tender.unit.replace("臺", "台").replace(" ", "")
+                                    ),
+                                    reverse=True,
+                                )
+                                unit_id = str(exact[0].get("unit_id") or "").strip()
+                    except Exception:
+                        pass
+
                 if unit_id:
-                    mirror_url = (
-                        "https://ezbid.tw/detail/"
-                        + quote(unit_id, safe=".")
-                        + "/"
-                        + quote(tender.job_number, safe="-_.")
-                    )
-                    mr = requests.get(
-                        mirror_url,
-                        timeout=10,
-                        headers={"User-Agent": "Mozilla/5.0 WishRail-Tender-Radar/0.2"},
-                    )
-                    mr.raise_for_status()
-                    msoup = BeautifulSoup(mr.text, "html.parser")
-                    mtext = clean(msoup)
-                    # Guard against a generic/error page.
-                    if tender.job_number in mtext or tender.title[:12] in mtext:
-                        if tender.budget is None:
-                            amount = money_from_text(mtext)
-                            if amount is not None:
-                                tender.budget = amount
-                                tender.reasons.append("預算由公開標案鏡像補足")
-                        if not tender.deadline:
-                            deadline = deadline_from_text(mtext)
-                            if deadline:
-                                tender.deadline = deadline
-                                tender.reasons.append("截止日由公開標案鏡像補足")
-                        if not tender.award_type:
-                            tender.award_type = text_after_label(mtext, "決標方式")
-                        if not tender.qualification:
-                            tender.qualification = text_after_label(mtext, "廠商資格摘要", 1200)
-                        if not tender.bid_bond:
-                            tender.bid_bond = text_after_label(mtext, "是否須繳納押標金")
-                        if not tender.performance_bond:
-                            tender.performance_bond = text_after_label(mtext, "是否須繳納履約保證金")
+                    mirror_urls = [
+                        "https://ezbid.tw/detail/" + quote(unit_id, safe=".") + "/" + quote(tender.job_number, safe="-_."),
+                        "https://cf.ezbid.tw/detail/" + quote(unit_id, safe=".") + "/" + quote(tender.job_number, safe="-_."),
+                    ]
+                    for mirror_url in mirror_urls:
+                        try:
+                            mr = requests.get(
+                                mirror_url,
+                                timeout=8,
+                                headers={"User-Agent": "Mozilla/5.0 WishRail-Tender-Radar/0.4"},
+                            )
+                            mr.raise_for_status()
+                            msoup = BeautifulSoup(mr.text, "html.parser")
+                            mtext = clean(msoup)
+                            if not (tender.job_number in mtext or tender.title[:12] in mtext):
+                                continue
+                            if tender.budget is None:
+                                amount = money_from_text(mtext)
+                                if amount is not None:
+                                    tender.budget = amount
+                                    tender.reasons.append("預算由公開標案鏡像補足")
+                            if not tender.deadline:
+                                deadline = deadline_from_text(mtext)
+                                if deadline:
+                                    tender.deadline = deadline
+                                    tender.reasons.append("截止日由公開標案鏡像補足")
+                            if not tender.award_type:
+                                tender.award_type = text_after_label(mtext, "決標方式")
+                            if not tender.qualification:
+                                tender.qualification = text_after_label(mtext, "廠商資格摘要", 1200)
+                            if not tender.bid_bond:
+                                tender.bid_bond = text_after_label(mtext, "是否須繳納押標金")
+                            if not tender.performance_bond:
+                                tender.performance_bond = text_after_label(mtext, "是否須繳納履約保證金")
+                            if tender.budget is not None and tender.deadline and tender.award_type:
+                                break
+                        except Exception:
+                            continue
             except Exception as exc:
                 tender.risks.append(f"公開鏡像 fallback 失敗: {type(exc).__name__}")
 
