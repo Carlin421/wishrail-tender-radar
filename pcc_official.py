@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field, asdict
@@ -404,4 +405,25 @@ class PCC:
             or text_after_label(flat_text, "履約保證金")
         )
         self._fallback_structured_detail(tender)
+
+        # Temporary structured diagnostics for notice variants whose fields are still missing.
+        if tender.budget is None or not tender.deadline:
+            diagnostic = []
+            for node in soup.find_all(["input", "span", "td", "th", "label"]):
+                node_id = str(node.get("id") or "").strip()
+                node_name = str(node.get("name") or "").strip()
+                node_text = clean(node)[:120]
+                node_value = str(node.get("value") or "").strip()[:120]
+                combined = " ".join([node_id, node_name, node_text, node_value])
+                if any(key in combined for key in ["預算", "截止投標", "截止收件", "決標方式", "押標", "履約保證"]):
+                    diagnostic.append({
+                        "tag": node.name,
+                        "id": node_id,
+                        "name": node_name,
+                        "text": node_text,
+                        "value": node_value,
+                    })
+            if diagnostic:
+                print("PCC_FIELD_DIAGNOSTIC", tender.job_number, json.dumps(diagnostic[:40], ensure_ascii=False))
+
         return tender
