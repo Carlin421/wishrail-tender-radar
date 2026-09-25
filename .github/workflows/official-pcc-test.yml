@@ -1,4 +1,4 @@
-name: Official PCC connectivity test
+name: Official PCC parser diagnostic
 
 on:
   push:
@@ -9,8 +9,15 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Inspect one official tender detail
+      - name: Inspect Nantou detail markup
         run: |
-          curl -sS -L --fail-with-body --max-time 30             -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0"             "https://web.pcc.gov.tw/prkms/tender/common/noticeDate/redirectPublic?ds=20260924&fn=TIQ-1-71121325.xml"             -o /tmp/detail.html
-          wc -c /tmp/detail.html
-          grep -n -E '預算金額|截止投標|廠商資格|標案名稱|決標方式|押標金|履約保證金|Web Page Blocked|validate/check' /tmp/detail.html | head -120 || true
+          curl -sS -L --fail-with-body --max-time 35 \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0" \
+            "https://web.pcc.gov.tw/prkms/tender/common/noticeDate/redirectPublic?ds=20260924&fn=TIQ-11-71121459.xml" \
+            -o /tmp/detail.html
+          echo "BUDGET"
+          grep -n -A12 -B2 "預算金額" /tmp/detail.html | head -80 || true
+          echo "DEADLINE"
+          grep -n -A10 -B2 "截止投標" /tmp/detail.html | head -60 || true
+          echo "AWARD"
+          grep -n -A10 -B2 "決標方式" /tmp/detail.html | head -60 || true
