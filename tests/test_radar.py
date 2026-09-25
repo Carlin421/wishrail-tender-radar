@@ -46,3 +46,30 @@ def test_history_similarity_and_merchants():
         "115年度街友服務資訊系統維護及功能擴充"
     ) >= .36
     assert merchant_names({"merchants": [{"name": "甲資訊有限公司"}, {"name": "甲資訊有限公司"}]}) == ["甲資訊有限公司"]
+
+
+def test_failed_history_signal_can_raise_priority():
+    from pcc_official import Tender as OfficialTender
+    from official_radar import score as official_score
+
+    base = OfficialTender(
+        unit="南投縣某鄉公所",
+        job_number="A1",
+        title="智慧觀光平台建置案",
+        budget=600000,
+        deadline="2026-10-10 17:00:00",
+        category="公開取得報價單或企劃書公告",
+    )
+    boosted = OfficialTender(
+        unit="南投縣某鄉公所",
+        job_number="A2",
+        title="智慧觀光平台建置案",
+        budget=600000,
+        deadline="2026-10-10 17:00:00",
+        category="公開取得報價單或企劃書公告",
+        failed_history_cases=2,
+        failed_history_ratio=0.5,
+    )
+    official_score(base, CFG)
+    official_score(boosted, CFG)
+    assert boosted.score > base.score
